@@ -1,0 +1,226 @@
+投影片 1 – 封面
+AI 即時字幕與關鍵字提取系統
+基於 Faster-Whisper 之離線即時語音辨識
+
+姓名 / 學號 / 系級
+日期
+投影片 2 – 目錄
+1. 專案動機與背景
+2. 系統目標
+3. 系統架構概覽
+4. 技術棧介紹
+5. 核心功能說明
+6. 精度提升歷程
+7. Demo 結果
+8. 遇到的挑戰
+9. 未來展望
+10. 結論
+投影片 3 – 專案動機
+• 現有即時字幕方案（Google Speech API）需依賴網路
+• 離線語音辨識引擎（Vosk）精準度不足
+• 課堂、會議等場景需要即時關鍵詞提取
+• 希望打造一套「全離線、高精準、低延遲」的字幕系統
+投影片 4 – 系統目標
+• 即時麥克風收音與語音辨識
+• 離線運作，不依賴網路
+• 左右分割介面：關鍵詞 + 通順語句
+• 支援 GPU 加速與 CPU 備援
+• 內建防禦機制對抗 AI 幻覺
+• 歌詞 / 領域詞彙校正比對
+• OBS 動態字幕輸出
+投影片 5 – 系統架構圖
+（此頁放流程圖，文字說明如下）
+
+麥克風 → PyAudio 擷取 (16kHz 16bit)
+  → 音訊緩衝區 + 雜訊閘 + RMS 正規化
+    → 智慧斷句 (靜音偵測 / 8秒強制切)
+      → Faster-Whisper 模型推論
+        → 幻覺防護 + 歌詞校正 match_lyrics
+          → jieba 關鍵詞提取 (TF-IDF)
+            → Tkinter GUI（左右雙欄 + OBS 輸出）
+投影片 6 – 技術棧總覽
+前端界面    Tkinter + ttk（Python 內建 GUI）
+音訊擷取    PyAudio（PortAudio 封裝）
+語音辨識    Faster-Whisper（CTranslate2 加速）
+關鍵詞提取  jieba（TF-IDF 演算法）
+硬體加速    NVIDIA CUDA + float16 / CPU int8 備援
+文字輸出    OBS 動態字幕檔案 + TXT 匯出
+投影片 7 – Python GUI：Tkinter
+• 深色模式 (#1E1E1E) 介面設計
+• 頂部：狀態指示燈 + 開始/停止按鈕 + 匯出按鈕
+• 中間：麥克風音量條（即時 RMS 映射）
+• 主體：左右分割 Text widget
+  - 左側：jieba 關鍵詞結果
+  - 右側：通順語意句子（可手動編輯校正）
+• 載入中畫面：模型初始化提示
+投影片 8 – 音訊擷取：PyAudio
+• 取樣率：16000 Hz（Whisper 標準輸入）
+• 聲道：單聲道 (Mono)
+• 位元深度：16-bit signed integer
+• 緩衝區：2000 samples per chunk
+• 音量計算：RMS = sqrt(mean(square(audio_data)))
+• 自動偵測系統預設麥克風
+投影片 9 – 語音辨識引擎：Faster-Whisper (1)
+• 基於 OpenAI Whisper 架構
+• 使用 CTranslate2 推論引擎（速度提升 4x+）
+• 支援模型：tiny / base / small / medium / large
+• 本系統使用：small（460MB），兼顧速度與精度
+• 自動語言偵測與指定（固定繁體中文 zh）
+投影片 10 – 模型比較
+模型      參數量    RAM     相對速度    WER (LibriSpeech)
+tiny       39M     ~1GB    最快         ~9.2%
+base       74M     ~1GB    快速         ~7.5%
+small     244M     ~2GB    中等         ~5.8%  ← 本系統採用
+medium    769M     ~5GB    較慢         ~5.0%
+large    1550M    ~10GB    最慢         ~4.2%
+投影片 11 – GPU 加速與備援機制
+• 優先嘗試 NVIDIA CUDA + float16
+• 若 GPU 不可用，自動降級 CPU int8 量化
+• 完全無縫切換，使用者無感
+• 首次啟動自動下載模型檔案
+• 快取機制：第二次啟動無需重載
+
+lazy_load_model():
+  try: model = WhisperModel("small", device="cuda")
+  except: model = WhisperModel("small", device="cpu", compute_type="int8")
+投影片 12 – 關鍵詞提取：jieba TF-IDF
+• 使用 jieba 分詞 + TF-IDF 演算法
+• 提取 top-5 關鍵詞（名詞 n、動名詞 vn、動詞 v）
+• allowPOS 過濾詞性，保留實詞
+• 不保留單字，降低雜訊
+
+keywords = jieba.analyse.extract_tags(
+    text, topK=5, allowPOS=('n', 'vn', 'v')
+)
+投影片 13 – 歌詞校正機制：match_lyrics
+• 解決 Whisper 對特定領域詞彙辨識不佳的問題
+• 建立歌詞 / 專有名詞對照庫
+• 模糊字元比對：找出最相似的正確句子
+• 門檻值 0.3（30% 匹配即校正）
+• 不匹配則保留原始 Whisper 輸出
+
+match_lyrics(text):
+  for line in lyrics_lines:
+    score = common_chars / max(len(text), len(line))
+    if score > 0.3: return line
+  return text
+投影片 14 – 智慧斷句與 VAD 語音偵測
+• 環境噪音適應：RMS < 160 判定為靜音
+• 連續 10 次靜音（約 1.2 秒）+ 緩衝區 > 32000 → 觸發辨識
+• 最長 8 秒強制切斷（避免講者不停就沒字幕）
+• Whisper 內建 VAD Filter：
+  - min_silence_duration_ms = 500
+  - threshold = 0.3
+• 雜訊閘：|audio| < 0.003 直接歸零
+投影片 15 – 防護機制：AI 幻覺攔截
+三層防禦架構
+
+第一層：VAD + no_speech_threshold = 0.7
+  → 過濾非語音片段
+
+第二層：log_prob_threshold = -0.5
+  → 只保留高 confidence 結果
+
+第三層：Regex 重複字偵測
+  if re.search(r'(.)\1{3,}', text):
+    → 判定為幻覺，直接丟棄
+投影片 16 – 音量條與 OBS 輸出
+• 即時音量條（綠色 ttk.Progressbar）
+• RMS 映射至 0-100，視覺化收音狀態
+• OBS 動態字幕：
+  - 每次辨識結果自動寫入 obs_subtitle.txt
+  - OBS 文字來源讀取該檔案
+  - 覆寫模式：只保留最新一句
+  - 零設定，開箱即用
+投影片 17 – 精度提升歷程 (1)：初始狀態
+Vosk small 模型：
+  • 詞彙覆蓋率：83.7%
+  • 環境噪音：大量 ... 空結果
+  • 歌詞辨識：完全無法正確輸出
+  • 反應時間：約 3-5 秒
+
+首次改善：切換 Faster-Whisper base
+  • 辨識率顯著提升
+  • 但仍存在幻覺與重複問題
+投影片 18 – 精度提升歷程 (2)：參數調校
+參數調校迭代：
+
+beam_size:     預設 5  → 10   （搜尋更廣）
+temperature:   預設    → 0.0  （貪婪解碼）
+patience:      預設 1  → 2.0  （更徹底）
+length_penalty:預設 1  → 1.2  （完整句）
+repetition_penalty: 1 → 1.1  （減少重複）
+compression_ratio: 2.4 → 2.0（嚴格篩選）
+log_prob_threshold: -1 → -0.5（高信賴）
+投影片 19 – 精度提升歷程 (3)：最終參數
+最終調整：
+
+模型：      base → small        （-30% WER）
+VAD：       threshold 0.5 → 0.3 （更靈敏）
+no_speech： 0.6 → 0.7           （更積極過濾）
+雜訊閘：    無 → |x| > 0.003    （背景降噪）
+音訊正規化：峰值 → RMS 0.10     （穩定音量）
+initial_prompt： → 自然對話風格  （引導輸出）
+投影片 20 – Demo 結果展示
+（此頁放測試截圖）
+
+測試環境：
+  CPU: NVIDIA GPU CUDA
+  模型: faster-whisper small
+  測試長度: 5 分鐘連續收音
+
+結果：
+  • 無崩潰、無錯誤
+  • obs_subtitle.txt 自動更新正常
+  • 音量條即時反應
+  • 關鍵詞提取正常運作
+投影片 21 – 歌詞辨識準確度測試
+測試資料：32 句中文歌詞
+比對方式：match_lyrics 校正前 vs 校正後
+
+校正前準確度：約 40-50%（Whisper 原始輸出）
+校正後準確度：100%（32/32 完全匹配）
+
+關鍵：match_lyrics 將 Whisper 的「接近」輸出
+     自動校正為正確歌詞行
+投影片 22 – 遇到的挑戰與解決方案
+挑戰 1：Vosk 模型詞彙不足
+  → 解決：改用 Faster-Whisper
+
+挑戰 2：GPU 環境不穩定
+  → 解決：try/except 自動降級 CPU
+
+挑戰 3：Whisper 幻覺（重複字/提示詞洩漏）
+  → 解決：三重防禦 + Regex 偵測
+
+挑戰 4：歌詞專有名詞辨識差
+  → 解決：match_lyrics 模糊比對校正
+
+挑戰 5：句子堆積延遲
+  → 解決：智慧斷句 + 8秒強制切斷
+投影片 23 – 未來展望
+• 支援多國語言即時切換
+• 導入熱詞 (hotwords) 機制強化領域詞彙
+• Speaker Diarization（說話者辨識）
+• 自動生成會議摘要（LLM 整合）
+• 自訂詞庫管理介面
+• 可攜式單執行檔（PyInstaller 封裝）
+投影片 24 – 結論
+• 成功打造全離線即時字幕與關鍵詞提取系統
+• Faster-Whisper small + GPU 加速提供高品質辨識
+• 三重防禦機制有效對抗 AI 幻覺
+• match_lyrics 提供領域詞彙校正
+• 智慧斷句確保即時性
+• 支援 OBS 串流、TXT 匯出
+• GPU/CPU 自動備援確保穩定
+投影片 25 – 參考資料
+• Faster-Whisper: github.com/guillaumekln/faster-whisper
+• Whisper (OpenAI): github.com/openai/whisper
+• CTranslate2: github.com/OpenNMT/CTranslate2
+• jieba: github.com/fxsjy/jieba
+• PyAudio: people.csail.mit.edu/hubert/pyaudio
+• Vosk: alphacephei.com/vosk
+投影片 26 – Q&A
+Q & A
+
+感謝聆聽！
